@@ -68,9 +68,15 @@ def main():
                 table.add_row("L3 X (left/right)", f"[yellow]{axes[0]:+.2f}[/yellow]" if len(axes) > 0 else "N/A")
                 table.add_row("L3 Y (up/down)", f"[yellow]{axes[1]:+.2f}[/yellow]" if len(axes) > 1 else "N/A")
 
+                # R1/R2 for speed control
+                r1_button = joystick.get_button(10) if joystick.get_numbuttons() > 10 else 0
+                r2_trigger = axes[5] if len(axes) > 5 else 0.0
+                table.add_row("R1 (button)", f"[cyan]{'PRESSED' if r1_button else 'released'}[/cyan]")
+                table.add_row("R2 (trigger)", f"[magenta]{r2_trigger:+.2f}[/magenta]")
+
                 # Other axes
-                if len(axes) > 2:
-                    table.add_row("Other axes", str([f"{a:+.2f}" for a in axes[2:]]))
+                if len(axes) > 6:
+                    table.add_row("Other axes", str([f"{a:+.2f}" for a in axes[6:]]))
 
                 # Buttons pressed
                 buttons_pressed = [i for i, b in enumerate(buttons) if b == 1]

@@ -27,7 +27,9 @@ CONFIG_FILE = "ble_device_config.json"
 CHARACTERISTIC_UUID = "23408888-1f40-4cd8-9b89-ca8d45f8a5b0"
 
 # Configuration
-DEADZONE = 0.15  # Ignore stick movements below 15%
+DEADZONE = 0.10  # Ignore stick movements below 10%
+MAX_SPEED = 50   # Maximum base speed (matches Thumbtroller)
+MAX_MIXER = 30   # Maximum turn strength
 MAX_SPEED_LEVELS = [50, 75, 100]  # Speed limit modes
 
 async def send_command(client, speedA, directionA, speedB, directionB, duration):
@@ -74,10 +76,9 @@ async def get_ble_address():
     saved_address = config.get("ble_address")
 
     if saved_address:
-        console.print(f"[cyan]Previously connected to device: {saved_address}[/cyan]")
-        choice = input("Connect to the same device? (y/n): ").lower()
-        if choice == 'y':
-            return saved_address
+        console.print(f"[cyan]Using saved device: {saved_address}[/cyan]")
+        console.print(f"[dim](Delete {CONFIG_FILE} to select a different device)[/dim]\n")
+        return saved_address
 
     new_address = await select_device()
     if new_address:
@@ -85,14 +86,19 @@ async def get_ble_address():
         save_config(config)
     return new_address
 
-def calculate_motor_command(left_stick_x, left_stick_y, max_speed):
+def calculate_motor_command(left_stick_x, left_stick_y, max_speed_limit):
     """
-    Convert joystick input to motor command.
+    Tank drive mixing - replicates Thumbtroller remote logic.
+
+    This uses the same algorithm as the original hardware remote:
+    - Y-axis controls forward/backward speed
+    - X-axis controls turning (mixer)
+    - Tank drive: left = speed + mixer, right = speed - mixer
 
     Args:
         left_stick_x: -1.0 (left) to +1.0 (right)
         left_stick_y: -1.0 (up/forward) to +1.0 (down/backward)
-        max_speed: Maximum speed limit (50, 75, or 100)
+        max_speed_limit: Speed multiplier (50, 75, or 100)
 
     Returns:
         (speedA, dirA, speedB, dirB, duration)
@@ -103,34 +109,40 @@ def calculate_motor_command(left_stick_x, left_stick_y, max_speed):
     if abs(left_stick_y) < DEADZONE:
         left_stick_y = 0.0
 
-    # If both centered, stop
+    # Stop if centered
     if left_stick_x == 0 and left_stick_y == 0:
         return (0, 1, 0, 1, 1)
 
-    # Calculate forward/backward speed (0-max_speed)
-    base_speed = int(abs(left_stick_y) * max_speed)
-    base_speed = max(15, min(max_speed, base_speed))  # Clamp to 15-max_speed
+    # Map joystick to speed and mixer
+    # Y-axis: -1 (forward) to +1 (backward) → -MAX_SPEED to +MAX_SPEED
+    speed = int(-left_stick_y * MAX_SPEED * (max_speed_limit / 100.0))
 
-    # Determine direction (negative Y = forward, positive Y = backward)
-    direction = 1 if left_stick_y < 0 else 0
+    # X-axis: -1 (left) to +1 (right) → -MAX_MIXER to +MAX_MIXER
+    mixer = int(left_stick_x * MAX_MIXER * (max_speed_limit / 100.0))
 
-    # Apply steering (differential drive)
-    if abs(left_stick_x) > 0:
-        # Reduce speed on inside wheel
-        turn_factor = abs(left_stick_x)
-        speed_reduction = int(base_speed * turn_factor * 0.5)
+    # Thumbtroller logic: add extra juice for pure turning (no forward/backward)
+    if abs(left_stick_y) < DEADZONE and abs(left_stick_x) >= DEADZONE:
+        if mixer > 0:
+            mixer += 25
+        elif mixer < 0:
+            mixer -= 25
 
-        if left_stick_x < 0:  # Turn left
-            speedA = max(15, base_speed - speed_reduction)
-            speedB = base_speed
-        else:  # Turn right
-            speedA = base_speed
-            speedB = max(15, base_speed - speed_reduction)
-    else:
-        # Straight
-        speedA = speedB = base_speed
+    # Tank drive mixing (Thumbtroller algorithm)
+    speed_a = speed + mixer  # Left wheel
+    speed_b = speed - mixer  # Right wheel
 
-    return (speedA, direction, speedB, direction, 2)
+    # Convert to motor commands (speed = abs, direction from sign)
+    motor_a_speed = abs(speed_a)
+    motor_a_dir = 1 if speed_a >= 0 else 0
+
+    motor_b_speed = abs(speed_b)
+    motor_b_dir = 1 if speed_b >= 0 else 0
+
+    # Clamp to 0-100 range
+    motor_a_speed = min(100, motor_a_speed)
+    motor_b_speed = min(100, motor_b_speed)
+
+    return (motor_a_speed, motor_a_dir, motor_b_speed, motor_b_dir, 2)
 
 async def control_loop(client, joystick):
     """Main control loop - read controller and send commands to car."""
@@ -178,7 +190,7 @@ async def control_loop(client, joystick):
 
             max_speed = MAX_SPEED_LEVELS[max_speed_index]
 
-            # Calculate command
+            # Calculate command using Thumbtroller algorithm
             command = calculate_motor_command(left_x, left_y, max_speed)
 
             # Send to car
